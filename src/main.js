@@ -44,25 +44,38 @@ const ASSET_PATHS = {
     terrain: 'assets/environments/terrain.glb',
     trees: 'assets/environments/trees.glb',
     water: 'assets/environments/water.glb'
-  }
+  },
+  // Legacy path for backward compatibility
+  legacy: 'assets/models/capybara.glb'
 };
 
-// Function to load a model
-function loadModel(path, onLoad) {
-  loader.load(
-    path,
-    onLoad,
-    (xhr) => {
-      // Progress callback not needed as we're using LoadingManager
-    },
-    (error) => {
-      console.error(`Error loading model from ${path}:`, error);
-    }
-  );
+// Function to load a model with better error handling
+function loadModel(path, onLoad, isRequired = false) {
+  return new Promise((resolve, reject) => {
+    loader.load(
+      path,
+      (gltf) => {
+        if (onLoad) onLoad(gltf);
+        resolve(gltf);
+      },
+      (xhr) => {
+        // Progress callback not needed as we're using LoadingManager
+      },
+      (error) => {
+        console.warn(`Error loading model from ${path}:`, error);
+        if (isRequired) {
+          console.error(`Required model ${path} could not be loaded.`);
+        } else {
+          console.warn(`Optional model ${path} could not be loaded. Continuing without it.`);
+        }
+        resolve(null); // Resolve with null instead of rejecting to prevent blocking
+      }
+    );
+  });
 }
 
-// Preload the capybara model
-loadModel(ASSET_PATHS.character, (gltf) => {
+// Load the capybara model (required)
+let capybaraModelPromise = loadModel(ASSET_PATHS.character, (gltf) => {
   capybaraModel = gltf.scene;
   capybaraAnimations = gltf.animations;
   
@@ -73,13 +86,42 @@ loadModel(ASSET_PATHS.character, (gltf) => {
       child.receiveShadow = true;
     }
   });
+}, true);
+
+// Fallback to legacy path if needed
+capybaraModelPromise.then((gltf) => {
+  if (!gltf) {
+    console.warn("Trying legacy capybara model path as fallback...");
+    loadModel(ASSET_PATHS.legacy, (gltf) => {
+      if (gltf) {
+        capybaraModel = gltf.scene;
+        capybaraAnimations = gltf.animations;
+        
+        // Enable shadows for all meshes in the model
+        capybaraModel.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+          }
+        });
+      } else {
+        console.error("Failed to load capybara model from both primary and legacy paths.");
+        // Create a simple placeholder cube as a last resort
+        const geometry = new THREE.BoxGeometry(1, 1, 1);
+        const material = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        capybaraModel = new THREE.Mesh(geometry, material);
+        capybaraModel.castShadow = true;
+        capybaraModel.receiveShadow = true;
+      }
+    }, true);
+  }
 });
 
 // Load environment assets (optional)
 Object.entries(ASSET_PATHS.environments).forEach(([key, path]) => {
   // Try to load environment assets, but don't block game initialization if they fail
-  try {
-    loadModel(path, (gltf) => {
+  loadModel(path, (gltf) => {
+    if (gltf) {
       environmentAssets[key] = gltf.scene;
       
       // Enable shadows for all meshes in the environment
@@ -94,24 +136,27 @@ Object.entries(ASSET_PATHS.environments).forEach(([key, path]) => {
       if (sceneSetup) {
         sceneSetup.scene.add(environmentAssets[key]);
       }
-    });
-  } catch (error) {
-    console.warn(`Environment asset ${key} could not be loaded. This is non-critical.`);
-  }
+    }
+  });
 });
 
 // Load animation clips (optional)
 Object.entries(ASSET_PATHS.animations).forEach(([key, path]) => {
   // Try to load animation assets, but don't block game initialization if they fail
-  try {
-    loadModel(path, (gltf) => {
-      if (gltf.animations && gltf.animations.length > 0) {
-        animationClips[key] = gltf.animations[0];
-      }
-    });
-  } catch (error) {
-    console.warn(`Animation ${key} could not be loaded. This is non-critical.`);
-  }
+  loadModel(path, (gltf) => {
+    if (gltf && gltf.animations && gltf.animations.length > 0) {
+      animationClips[key] = gltf.animations[0];
+    } else if (key === 'idle' && (!gltf || !gltf.animations || gltf.animations.length === 0)) {
+      // For idle animation, create a simple fallback if it's missing
+      console.warn("Creating fallback idle animation");
+      const track = new THREE.NumberKeyframeTrack(
+        '.position[y]',
+        [0, 1, 2],
+        [0, 0.05, 0]
+      );
+      animationClips[key] = new THREE.AnimationClip('idle', 2, [track]);
+    }
+  });
 });
 
 async function init() {
@@ -125,13 +170,36 @@ async function init() {
     
     // Add any loaded environment assets to the scene
     Object.values(environmentAssets).forEach(model => {
-      sceneSetup.scene.add(model);
+      if (model) {
+        sceneSetup.scene.add(model);
+      }
     });
+    
+    // Create default environment if no terrain was loaded
+    if (!environmentAssets.terrain) {
+      console.warn('Creating default terrain because terrain model failed to load');
+      // Create a simple ground plane
+      const groundGeometry = new THREE.PlaneGeometry(50, 50);
+      const groundMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x7CFC00,
+        roughness: 0.8,
+        metalness: 0.2
+      });
+      const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+      ground.rotation.x = -Math.PI / 2; // Rotate to be horizontal
+      ground.receiveShadow = true;
+      sceneSetup.scene.add(ground);
+      
+      // Add a physics collider for the ground
+      const groundColliderDesc = RAPIER.ColliderDesc.cuboid(25, 0.1, 25);
+      groundColliderDesc.setTranslation(0, -0.1, 0);
+      physicsWorld.world.createCollider(groundColliderDesc);
+    }
     
     // Create the player with the loaded model and animations
     // If model failed to load, create a placeholder
     if (!capybaraModel) {
-      console.warn('Using placeholder model because capybara.glb failed to load');
+      console.warn('Using placeholder model because capybara model failed to load');
       // Create a simple capsule as placeholder
       const geometry = new THREE.CapsuleGeometry(0.5, 1, 4, 8);
       const material = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
@@ -139,8 +207,19 @@ async function init() {
       capybaraAnimations = [];
     }
     
+    // Ensure we have at least a basic idle animation
+    if (!animationClips.idle) {
+      console.warn('Creating default idle animation');
+      const track = new THREE.NumberKeyframeTrack(
+        '.position[y]',
+        [0, 1, 2],
+        [0, 0.05, 0]
+      );
+      animationClips.idle = new THREE.AnimationClip('idle', 2, [track]);
+    }
+    
     // Combine default animations with any separately loaded animation clips
-    const allAnimations = [...(capybaraAnimations || []), ...Object.values(animationClips)];
+    const allAnimations = [...(capybaraAnimations || []), ...Object.values(animationClips).filter(Boolean)];
     
     // Create the player
     player = new Player(sceneSetup.scene, physicsWorld.world, capybaraModel, allAnimations);
@@ -153,6 +232,11 @@ async function init() {
     
   } catch (error) {
     console.error('Error initializing the game:', error);
+    // Display error message to user
+    const loadingElement = document.getElementById('loading');
+    if (loadingElement) {
+      loadingElement.innerHTML = `<p>Error initializing game: ${error.message}</p><p>Please try refreshing the page.</p>`;
+    }
   }
 }
 
@@ -174,6 +258,11 @@ function animate(time) {
     
     // Update camera to follow the player
     updateCamera();
+    
+    // Update animation mixer
+    if (player.mixer) {
+      player.mixer.update(delta);
+    }
   }
   
   // Render the scene
@@ -182,19 +271,27 @@ function animate(time) {
   }
 }
 
-// Third-person camera that follows the player
+// Update camera to follow player
 function updateCamera() {
-  const playerPosition = player.container.position;
+  if (!player || !sceneSetup) return;
   
-  // Get the direction the player is facing
-  const forward = new THREE.Vector3();
-  player.container.getWorldDirection(forward);
+  // Get player position
+  const playerPos = player.container.position;
   
-  // Calculate the position behind the player
-  const backward = forward.clone().negate();
-  const cameraOffset = backward.multiplyScalar(5).add(new THREE.Vector3(0, 2, 0));
+  // Camera follows player with offset
+  const cameraTargetPos = new THREE.Vector3(
+    playerPos.x,
+    playerPos.y + 2, // Camera is 2 units above player
+    playerPos.z + 5  // Camera is 5 units behind player
+  );
   
-  // Set camera position and look at the player
-  sceneSetup.camera.position.copy(playerPosition).add(cameraOffset);
-  sceneSetup.camera.lookAt(playerPosition);
+  // Smoothly interpolate camera position
+  sceneSetup.camera.position.lerp(cameraTargetPos, 0.1);
+  
+  // Camera looks at player
+  sceneSetup.camera.lookAt(
+    playerPos.x,
+    playerPos.y + 1, // Look at player's head
+    playerPos.z
+  );
 }
