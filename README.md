@@ -30,10 +30,12 @@ A 3D game featuring a capybara with physics-based character controls using Three
    npm install
    ```
 
-3. Add your capybara 3D model:
-   - Place a file named `capybara.glb` in the `assets/models/` directory
-   - The GLB file should include the 3D model and at least one animation (idle)
-   - If you don't have a model, the game will use a simple placeholder
+3. Add your 3D assets:
+   - **Character**: Place your capybara model in `assets/character/capybara.glb`
+   - **Animations**: Add animation files to `assets/animations/` (idle.glb, walk.glb, etc.)
+   - **Environments**: Add environment models to `assets/environments/` (terrain.glb, trees.glb, etc.)
+   
+   If you don't have models, the game will use simple placeholders.
 
 4. Start the development server:
    ```
@@ -65,8 +67,17 @@ The built files will be in the `dist/` directory.
 ```
 capybara-vibing/
 ├── assets/
-│   └── models/
-│       └── capybara.glb
+│   ├── character/     # Character models
+│   │   └── capybara.glb
+│   ├── animations/    # Animation files
+│   │   ├── idle.glb
+│   │   ├── walk.glb
+│   │   ├── run.glb
+│   │   └── jump.glb
+│   ├── environments/  # Environment models
+│   │   ├── terrain.glb
+│   │   └── trees.glb
+│   └── models/        # Legacy directory (for backward compatibility)
 ├── src/
 │   ├── SceneSetup.js   # Three.js scene, camera, and renderer setup
 │   ├── PhysicsWorld.js # Rapier.js physics world setup
@@ -77,6 +88,23 @@ capybara-vibing/
 ├── vite.config.js
 └── README.md
 ```
+
+## Asset Guidelines
+
+### Character Model
+- The capybara model should be properly rigged for animation
+- Forward direction should be along the positive Z-axis
+- Recommended scale: 1-2 units in height
+
+### Animations
+- Idle animation: A looping animation for when the character is stationary
+- Walk/Run animations: For character movement
+- Jump animation: For the jumping action
+- All animations should be properly rigged to the character model
+
+### Environment Assets
+- Terrain models should be properly scaled to match the game world
+- Optimize meshes and textures for web performance
 
 ## Technologies Used
 
