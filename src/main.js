@@ -10,36 +10,36 @@ let sceneSetup, physicsWorld, player;
 let capybaraModel, capybaraAnimations;
 let environmentAssets = {};
 let animationClips = {};
-let loadingFailed = false;
 
-// Create a loading manager with better error handling
-const loadingManager = new THREE.LoadingManager(
-  // onLoad callback
-  () => {
-    // Hide loading screen when everything is loaded
-    document.getElementById('loading').style.display = 'none';
-    
-    // Only initialize if loading didn't fail critically
-    if (!loadingFailed) {
-      // Start the game
-      init();
+// Initialize the game immediately without waiting for model loading
+document.addEventListener('DOMContentLoaded', async () => {
+  try {
+    // Show loading screen
+    const loadingElement = document.getElementById('loading');
+    if (loadingElement) {
+      loadingElement.style.display = 'block';
+      loadingElement.querySelector('p').textContent = 'Initializing game...';
     }
-  },
-  // onProgress callback
-  (url, itemsLoaded, itemsTotal) => {
-    const progress = (itemsLoaded / itemsTotal * 100).toFixed(0);
-    document.getElementById('loading').querySelector('p').textContent = 
-      `Loading... ${progress}%`;
-  },
-  // onError callback
-  (url) => {
-    console.warn(`Failed to load: ${url}`);
-    // We'll handle specific errors in the loadModel function
+    
+    // Initialize the game first
+    await initGame();
+    
+    // Then load models asynchronously
+    loadModels().finally(() => {
+      // Hide loading screen when done
+      if (loadingElement) {
+        loadingElement.style.display = 'none';
+      }
+    });
+  } catch (error) {
+    console.error('Error during game startup:', error);
+    // Show error message
+    const loadingElement = document.getElementById('loading');
+    if (loadingElement) {
+      loadingElement.innerHTML = `<p>Error starting game: ${error.message}</p><p>Please try refreshing the page.</p>`;
+    }
   }
-);
-
-// Create a GLTFLoader with the loading manager
-const loader = new GLTFLoader(loadingManager);
+});
 
 // Asset paths
 const ASSET_PATHS = {
@@ -59,41 +59,6 @@ const ASSET_PATHS = {
   legacy: 'assets/models/capybara.glb'
 };
 
-// Function to load a model with better error handling
-function loadModel(path, onLoad, isRequired = false) {
-  return new Promise((resolve, reject) => {
-    try {
-      loader.load(
-        path,
-        (gltf) => {
-          try {
-            if (onLoad) onLoad(gltf);
-            resolve(gltf);
-          } catch (error) {
-            console.error(`Error in onLoad callback for ${path}:`, error);
-            resolve(null);
-          }
-        },
-        (xhr) => {
-          // Progress callback not needed as we're using LoadingManager
-        },
-        (error) => {
-          console.warn(`Error loading model from ${path}:`, error);
-          if (isRequired) {
-            console.error(`Required model ${path} could not be loaded.`);
-          } else {
-            console.warn(`Optional model ${path} could not be loaded. Continuing without it.`);
-          }
-          resolve(null); // Resolve with null instead of rejecting to prevent blocking
-        }
-      );
-    } catch (error) {
-      console.error(`Exception trying to load ${path}:`, error);
-      resolve(null);
-    }
-  });
-}
-
 // Create a default placeholder model
 function createPlaceholderModel() {
   console.warn('Creating placeholder capybara model');
@@ -105,151 +70,7 @@ function createPlaceholderModel() {
   return model;
 }
 
-// Load the capybara model (required)
-let capybaraModelPromise = loadModel(ASSET_PATHS.character, (gltf) => {
-  if (!gltf || !gltf.scene) {
-    console.warn('Invalid capybara model from primary path');
-    return;
-  }
-  
-  capybaraModel = gltf.scene;
-  capybaraAnimations = gltf.animations || [];
-  
-  // Enable shadows for all meshes in the model
-  capybaraModel.traverse((child) => {
-    if (child.isMesh) {
-      child.castShadow = true;
-      child.receiveShadow = true;
-    }
-  });
-}, false); // Changed to false since we'll handle fallbacks manually
-
-// Fallback to legacy path if needed
-capybaraModelPromise.then((gltf) => {
-  if (!gltf || !gltf.scene) {
-    console.warn("Trying legacy capybara model path as fallback...");
-    return loadModel(ASSET_PATHS.legacy, (gltf) => {
-      if (gltf && gltf.scene) {
-        capybaraModel = gltf.scene;
-        capybaraAnimations = gltf.animations || [];
-        
-        // Enable shadows for all meshes in the model
-        capybaraModel.traverse((child) => {
-          if (child.isMesh) {
-            child.castShadow = true;
-            child.receiveShadow = true;
-          }
-        });
-      }
-    }, false);
-  }
-}).catch(error => {
-  console.error("Error in capybara model loading chain:", error);
-});
-
-// Load environment assets (optional)
-Object.entries(ASSET_PATHS.environments).forEach(([key, path]) => {
-  // Try to load environment assets, but don't block game initialization if they fail
-  loadModel(path, (gltf) => {
-    if (gltf && gltf.scene) {
-      environmentAssets[key] = gltf.scene;
-      
-      // Enable shadows for all meshes in the environment
-      environmentAssets[key].traverse((child) => {
-        if (child.isMesh) {
-          child.receiveShadow = true;
-          child.castShadow = true;
-        }
-      });
-      
-      // Add to scene if it's already created
-      if (sceneSetup) {
-        sceneSetup.scene.add(environmentAssets[key]);
-      }
-    }
-  });
-});
-
-// Load animation clips (optional)
-Object.entries(ASSET_PATHS.animations).forEach(([key, path]) => {
-  // Try to load animation assets, but don't block game initialization if they fail
-  loadModel(path, (gltf) => {
-    if (gltf && gltf.animations && gltf.animations.length > 0) {
-      animationClips[key] = gltf.animations[0];
-    }
-  });
-});
-
-async function init() {
-  try {
-    // Initialize Rapier physics
-    await RAPIER.init();
-    
-    // Set up scene and physics
-    sceneSetup = new SceneSetup();
-    physicsWorld = new PhysicsWorld();
-    
-    // Add any loaded environment assets to the scene
-    Object.values(environmentAssets).forEach(model => {
-      if (model) {
-        sceneSetup.scene.add(model);
-      }
-    });
-    
-    // Create default environment if no terrain was loaded
-    if (!environmentAssets.terrain) {
-      console.warn('Creating default terrain because terrain model failed to load');
-      // Create a simple ground plane
-      const groundGeometry = new THREE.PlaneGeometry(50, 50);
-      const groundMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0x7CFC00,
-        roughness: 0.8,
-        metalness: 0.2
-      });
-      const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-      ground.rotation.x = -Math.PI / 2; // Rotate to be horizontal
-      ground.receiveShadow = true;
-      sceneSetup.scene.add(ground);
-      
-      // Add a physics collider for the ground
-      const groundColliderDesc = RAPIER.ColliderDesc.cuboid(25, 0.1, 25);
-      groundColliderDesc.setTranslation(0, -0.1, 0);
-      physicsWorld.world.createCollider(groundColliderDesc);
-    }
-    
-    // Create the player with the loaded model and animations
-    // If model failed to load, create a placeholder
-    if (!capybaraModel) {
-      capybaraModel = createPlaceholderModel();
-      capybaraAnimations = [];
-    }
-    
-    // Create fallback animations
-    createFallbackAnimations();
-    
-    // Combine default animations with any separately loaded animation clips
-    const allAnimations = [...(capybaraAnimations || []), ...Object.values(animationClips).filter(Boolean)];
-    
-    // Create the player
-    player = new Player(sceneSetup.scene, physicsWorld.world, capybaraModel, allAnimations);
-    
-    // Initial camera position
-    sceneSetup.camera.position.set(0, 5, 10);
-    
-    // Start the animation loop
-    animate(0);
-    
-  } catch (error) {
-    console.error('Error initializing the game:', error);
-    // Display error message to user
-    const loadingElement = document.getElementById('loading');
-    if (loadingElement) {
-      loadingElement.innerHTML = `<p>Error initializing game: ${error.message}</p><p>Please try refreshing the page.</p>`;
-    }
-  }
-}
-
-// Create fallback animations if needed
+// Create fallback animations
 function createFallbackAnimations() {
   // Idle animation (small up and down movement)
   if (!animationClips.idle) {
@@ -282,6 +103,206 @@ function createFallbackAnimations() {
       [0, 0.2, 0]
     );
     animationClips.jump = new THREE.AnimationClip('jump', 0.5, [jumpTrack]);
+  }
+}
+
+// Initialize the game without waiting for models
+async function initGame() {
+  try {
+    // Initialize Rapier physics
+    await RAPIER.init();
+    
+    // Set up scene and physics
+    sceneSetup = new SceneSetup();
+    physicsWorld = new PhysicsWorld();
+    
+    // Create default environment
+    createDefaultEnvironment();
+    
+    // Create a placeholder model to start with
+    capybaraModel = createPlaceholderModel();
+    capybaraAnimations = [];
+    
+    // Create fallback animations
+    createFallbackAnimations();
+    
+    // Combine default animations
+    const allAnimations = Object.values(animationClips).filter(Boolean);
+    
+    // Create the player
+    player = new Player(sceneSetup.scene, physicsWorld.world, capybaraModel, allAnimations);
+    
+    // Initial camera position
+    sceneSetup.camera.position.set(0, 5, 10);
+    
+    // Start the animation loop
+    animate(0);
+    
+    return true;
+  } catch (error) {
+    console.error('Error initializing the game:', error);
+    throw error;
+  }
+}
+
+// Create a default environment
+function createDefaultEnvironment() {
+  console.warn('Creating default terrain');
+  // Create a simple ground plane
+  const groundGeometry = new THREE.PlaneGeometry(50, 50);
+  const groundMaterial = new THREE.MeshStandardMaterial({ 
+    color: 0x7CFC00,
+    roughness: 0.8,
+    metalness: 0.2
+  });
+  const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+  ground.rotation.x = -Math.PI / 2; // Rotate to be horizontal
+  ground.receiveShadow = true;
+  sceneSetup.scene.add(ground);
+  
+  // Add a physics collider for the ground
+  const groundColliderDesc = RAPIER.ColliderDesc.cuboid(25, 0.1, 25);
+  groundColliderDesc.setTranslation(0, -0.1, 0);
+  physicsWorld.world.createCollider(groundColliderDesc);
+}
+
+// Load models asynchronously after the game has started
+async function loadModels() {
+  try {
+    // Create a loader
+    const loader = new THREE.GLTFLoader();
+    
+    // Function to load a model with error handling
+    const loadModel = (path) => {
+      return new Promise((resolve) => {
+        try {
+          loader.load(
+            path,
+            (gltf) => resolve(gltf),
+            () => {}, // Progress callback (empty)
+            (error) => {
+              console.warn(`Error loading model from ${path}:`, error);
+              console.warn(`Optional model ${path} could not be loaded. Continuing without it.`);
+              resolve(null);
+            }
+          );
+        } catch (error) {
+          console.error(`Exception trying to load ${path}:`, error);
+          resolve(null);
+        }
+      });
+    };
+    
+    // Try to load the capybara model
+    let gltf = await loadModel(ASSET_PATHS.character);
+    
+    // If primary path fails, try legacy path
+    if (!gltf || !gltf.scene) {
+      console.warn("Trying legacy capybara model path as fallback...");
+      gltf = await loadModel(ASSET_PATHS.legacy);
+    }
+    
+    // If we successfully loaded a model, replace the placeholder
+    if (gltf && gltf.scene) {
+      // Remove the old model from the scene
+      if (player && player.mesh) {
+        player.container.remove(player.mesh);
+      }
+      
+      // Set up the new model
+      capybaraModel = gltf.scene;
+      capybaraAnimations = gltf.animations || [];
+      
+      // Enable shadows for all meshes in the model
+      capybaraModel.traverse((child) => {
+        if (child.isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+      
+      // Update the player with the new model
+      if (player) {
+        // Scale and rotate the model
+        capybaraModel.scale.set(0.5, 0.5, 0.5);
+        capybaraModel.rotation.y = Math.PI;
+        
+        // Add to the player container
+        player.mesh = capybaraModel;
+        player.container.add(capybaraModel);
+        
+        // Update animations
+        if (capybaraAnimations.length > 0) {
+          // Create a new mixer for the model
+          player.mixer = new THREE.AnimationMixer(capybaraModel);
+          
+          // Add the animations
+          capybaraAnimations.forEach(clip => {
+            const name = clip.name.toLowerCase();
+            player.actions[name] = player.mixer.clipAction(clip);
+            player.actions[name].setEffectiveTimeScale(1);
+            player.actions[name].setEffectiveWeight(1);
+            
+            if (name.includes('idle') || name.includes('walk') || name.includes('run')) {
+              player.actions[name].setLoop(THREE.LoopRepeat);
+            }
+          });
+          
+          // Play idle animation if available
+          if (player.actions['idle']) {
+            player.playAnimation('idle');
+          }
+        }
+      }
+    }
+    
+    // Load environment assets
+    const environmentPromises = Object.entries(ASSET_PATHS.environments).map(async ([key, path]) => {
+      const envGltf = await loadModel(path);
+      if (envGltf && envGltf.scene) {
+        environmentAssets[key] = envGltf.scene;
+        
+        // Enable shadows for all meshes in the environment
+        environmentAssets[key].traverse((child) => {
+          if (child.isMesh) {
+            child.receiveShadow = true;
+            child.castShadow = true;
+          }
+        });
+        
+        // Add to scene
+        if (sceneSetup) {
+          sceneSetup.scene.add(environmentAssets[key]);
+        }
+      }
+    });
+    
+    // Load animation clips
+    const animationPromises = Object.entries(ASSET_PATHS.animations).map(async ([key, path]) => {
+      const animGltf = await loadModel(path);
+      if (animGltf && animGltf.animations && animGltf.animations.length > 0) {
+        animationClips[key] = animGltf.animations[0];
+        
+        // Add to player if it exists
+        if (player && player.mixer) {
+          const name = animGltf.animations[0].name.toLowerCase();
+          player.actions[name] = player.mixer.clipAction(animGltf.animations[0]);
+          player.actions[name].setEffectiveTimeScale(1);
+          player.actions[name].setEffectiveWeight(1);
+          
+          if (name.includes('idle') || name.includes('walk') || name.includes('run')) {
+            player.actions[name].setLoop(THREE.LoopRepeat);
+          }
+        }
+      }
+    });
+    
+    // Wait for all assets to load
+    await Promise.all([...environmentPromises, ...animationPromises]);
+    
+    console.log('All models loaded successfully');
+  } catch (error) {
+    console.error('Error loading models:', error);
   }
 }
 
