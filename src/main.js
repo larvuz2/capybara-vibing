@@ -28,32 +28,91 @@ const loader = new GLTFLoader(loadingManager);
 // Global variables
 let sceneSetup, physicsWorld, player;
 let capybaraModel, capybaraAnimations;
+let environmentAssets = {};
+let animationClips = {};
+
+// Asset paths
+const ASSET_PATHS = {
+  character: 'assets/character/capybara.glb',
+  animations: {
+    idle: 'assets/animations/idle.glb',
+    walk: 'assets/animations/walk.glb',
+    run: 'assets/animations/run.glb',
+    jump: 'assets/animations/jump.glb'
+  },
+  environments: {
+    terrain: 'assets/environments/terrain.glb',
+    trees: 'assets/environments/trees.glb',
+    water: 'assets/environments/water.glb'
+  }
+};
+
+// Function to load a model
+function loadModel(path, onLoad) {
+  loader.load(
+    path,
+    onLoad,
+    (xhr) => {
+      // Progress callback not needed as we're using LoadingManager
+    },
+    (error) => {
+      console.error(`Error loading model from ${path}:`, error);
+    }
+  );
+}
 
 // Preload the capybara model
-loader.load(
-  'assets/models/capybara.glb',
-  (gltf) => {
-    capybaraModel = gltf.scene;
-    capybaraAnimations = gltf.animations;
-    
-    // Enable shadows for all meshes in the model
-    capybaraModel.traverse((child) => {
-      if (child.isMesh) {
-        child.castShadow = true;
-        child.receiveShadow = true;
+loadModel(ASSET_PATHS.character, (gltf) => {
+  capybaraModel = gltf.scene;
+  capybaraAnimations = gltf.animations;
+  
+  // Enable shadows for all meshes in the model
+  capybaraModel.traverse((child) => {
+    if (child.isMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+    }
+  });
+});
+
+// Load environment assets (optional)
+Object.entries(ASSET_PATHS.environments).forEach(([key, path]) => {
+  // Try to load environment assets, but don't block game initialization if they fail
+  try {
+    loadModel(path, (gltf) => {
+      environmentAssets[key] = gltf.scene;
+      
+      // Enable shadows for all meshes in the environment
+      environmentAssets[key].traverse((child) => {
+        if (child.isMesh) {
+          child.receiveShadow = true;
+          child.castShadow = true;
+        }
+      });
+      
+      // Add to scene if it's already created
+      if (sceneSetup) {
+        sceneSetup.scene.add(environmentAssets[key]);
       }
     });
-  },
-  (xhr) => {
-    // This callback is not needed as we're using LoadingManager
-  },
-  (error) => {
-    console.error('An error happened loading the capybara model:', error);
-    // Show error on loading screen
-    document.getElementById('loading').querySelector('p').textContent = 
-      'Error loading model. Please refresh the page.';
+  } catch (error) {
+    console.warn(`Environment asset ${key} could not be loaded. This is non-critical.`);
   }
-);
+});
+
+// Load animation clips (optional)
+Object.entries(ASSET_PATHS.animations).forEach(([key, path]) => {
+  // Try to load animation assets, but don't block game initialization if they fail
+  try {
+    loadModel(path, (gltf) => {
+      if (gltf.animations && gltf.animations.length > 0) {
+        animationClips[key] = gltf.animations[0];
+      }
+    });
+  } catch (error) {
+    console.warn(`Animation ${key} could not be loaded. This is non-critical.`);
+  }
+});
 
 async function init() {
   try {
@@ -63,6 +122,11 @@ async function init() {
     // Set up scene and physics
     sceneSetup = new SceneSetup();
     physicsWorld = new PhysicsWorld();
+    
+    // Add any loaded environment assets to the scene
+    Object.values(environmentAssets).forEach(model => {
+      sceneSetup.scene.add(model);
+    });
     
     // Create the player with the loaded model and animations
     // If model failed to load, create a placeholder
@@ -75,8 +139,11 @@ async function init() {
       capybaraAnimations = [];
     }
     
+    // Combine default animations with any separately loaded animation clips
+    const allAnimations = [...(capybaraAnimations || []), ...Object.values(animationClips)];
+    
     // Create the player
-    player = new Player(sceneSetup.scene, physicsWorld.world, capybaraModel, capybaraAnimations);
+    player = new Player(sceneSetup.scene, physicsWorld.world, capybaraModel, allAnimations);
     
     // Initial camera position
     sceneSetup.camera.position.set(0, 5, 10);
