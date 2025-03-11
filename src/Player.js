@@ -54,6 +54,8 @@ export class Player {
   setupAnimations(animations) {
     // Try to identify animations by name
     animations.forEach(clip => {
+      if (!clip) return; // Skip null animations
+      
       // Store animation by name (lowercase)
       const name = clip.name.toLowerCase();
       this.actions[name] = this.mixer.clipAction(clip);
@@ -68,13 +70,57 @@ export class Player {
       }
     });
     
+    // Create fallback animations if needed
+    this.createFallbackAnimations();
+    
     // If we have an idle animation, play it by default
     if (this.actions['idle']) {
       this.playAnimation('idle');
-    } else if (animations.length > 0) {
+    } else if (Object.keys(this.actions).length > 0) {
       // Otherwise play the first animation
-      const firstAnimName = animations[0].name.toLowerCase();
+      const firstAnimName = Object.keys(this.actions)[0];
       this.playAnimation(firstAnimName);
+    }
+  }
+  
+  createFallbackAnimations() {
+    // Create fallback animations for essential movements if they don't exist
+    
+    // Idle animation (small up and down movement)
+    if (!this.actions['idle']) {
+      const idleTrack = new THREE.NumberKeyframeTrack(
+        '.position[y]',
+        [0, 1, 2],
+        [0, 0.05, 0]
+      );
+      const idleClip = new THREE.AnimationClip('idle', 2, [idleTrack]);
+      this.actions['idle'] = this.mixer.clipAction(idleClip);
+      this.actions['idle'].setLoop(THREE.LoopRepeat);
+    }
+    
+    // Walk animation (if missing)
+    if (!this.actions['walk'] && !Object.keys(this.actions).some(key => key.includes('walk'))) {
+      const walkTrack = new THREE.NumberKeyframeTrack(
+        '.position[y]',
+        [0, 0.25, 0.5, 0.75, 1],
+        [0, 0.1, 0, 0.1, 0]
+      );
+      const walkClip = new THREE.AnimationClip('walk', 1, [walkTrack]);
+      this.actions['walk'] = this.mixer.clipAction(walkClip);
+      this.actions['walk'].setLoop(THREE.LoopRepeat);
+    }
+    
+    // Jump animation (if missing)
+    if (!this.actions['jump'] && !Object.keys(this.actions).some(key => key.includes('jump'))) {
+      const jumpTrack = new THREE.NumberKeyframeTrack(
+        '.position[y]',
+        [0, 0.5, 1],
+        [0, 0.2, 0]
+      );
+      const jumpClip = new THREE.AnimationClip('jump', 0.5, [jumpTrack]);
+      this.actions['jump'] = this.mixer.clipAction(jumpClip);
+      this.actions['jump'].setLoop(THREE.LoopOnce);
+      this.actions['jump'].clampWhenFinished = true;
     }
   }
 
@@ -85,7 +131,11 @@ export class Player {
     );
     
     if (!animationName) {
-      console.warn(`Animation "${name}" not found`);
+      console.warn(`Animation "${name}" not found, using fallback`);
+      // Use idle as fallback
+      if (this.actions['idle'] && this.currentAction !== this.actions['idle']) {
+        this.playAnimation('idle');
+      }
       return;
     }
     
@@ -101,126 +151,117 @@ export class Player {
       action.crossFadeFrom(this.currentAction, crossFadeDuration, true);
     }
     
-    action.play();
     this.currentAction = action;
+    action.play();
   }
 
   onKeyDown(e) {
-    switch (e.key.toLowerCase()) {
-      case 'w': this.keys.w = true; break;
-      case 'a': this.keys.a = true; break;
-      case 's': this.keys.s = true; break;
-      case 'd': this.keys.d = true; break;
-      case ' ': this.keys.space = true; break;
-    }
+    // Update key state
+    if (e.key === 'w' || e.key === 'ArrowUp') this.keys.w = true;
+    if (e.key === 'a' || e.key === 'ArrowLeft') this.keys.a = true;
+    if (e.key === 's' || e.key === 'ArrowDown') this.keys.s = true;
+    if (e.key === 'd' || e.key === 'ArrowRight') this.keys.d = true;
+    if (e.key === ' ') this.keys.space = true;
   }
 
   onKeyUp(e) {
-    switch (e.key.toLowerCase()) {
-      case 'w': this.keys.w = false; break;
-      case 'a': this.keys.a = false; break;
-      case 's': this.keys.s = false; break;
-      case 'd': this.keys.d = false; break;
-      case ' ': this.keys.space = false; break;
-    }
+    // Update key state
+    if (e.key === 'w' || e.key === 'ArrowUp') this.keys.w = false;
+    if (e.key === 'a' || e.key === 'ArrowLeft') this.keys.a = false;
+    if (e.key === 's' || e.key === 'ArrowDown') this.keys.s = false;
+    if (e.key === 'd' || e.key === 'ArrowRight') this.keys.d = false;
+    if (e.key === ' ') this.keys.space = false;
   }
 
   update(delta) {
+    // Store previous state for animation transitions
+    const wasMoving = this.isMoving;
+    const wasJumping = this.isJumping;
+    
+    // Reset movement flag
+    this.isMoving = false;
+    
+    // Get current velocity
+    const velocity = this.body.linvel();
+    
+    // Calculate movement direction
+    let moveX = 0;
+    let moveZ = 0;
+    
+    if (this.keys.w) moveZ -= 1;
+    if (this.keys.s) moveZ += 1;
+    if (this.keys.a) moveX -= 1;
+    if (this.keys.d) moveX += 1;
+    
+    // Normalize movement vector if moving diagonally
+    if (moveX !== 0 && moveZ !== 0) {
+      const length = Math.sqrt(moveX * moveX + moveZ * moveZ);
+      moveX /= length;
+      moveZ /= length;
+    }
+    
+    // Apply movement if any keys are pressed
+    if (moveX !== 0 || moveZ !== 0) {
+      this.isMoving = true;
+      
+      // Rotate the container to face the movement direction
+      const angle = Math.atan2(moveX, moveZ);
+      this.container.rotation.y = angle;
+      
+      // Apply movement force
+      this.body.setLinvel(
+        new RAPIER.Vector3(moveX * this.moveSpeed, velocity.y, moveZ * this.moveSpeed),
+        true
+      );
+    } else {
+      // Stop horizontal movement if no keys are pressed
+      this.body.setLinvel(new RAPIER.Vector3(0, velocity.y, 0), true);
+    }
+    
+    // Handle jumping
+    // Check if on ground (simple check: y velocity close to 0 and y position close to ground)
+    const position = this.body.translation();
+    const isOnGround = Math.abs(velocity.y) < 0.1 && position.y < 1.1;
+    
+    if (isOnGround && this.keys.space) {
+      // Apply jump impulse
+      this.body.applyImpulse(new RAPIER.Vector3(0, this.jumpForce, 0), true);
+      this.isJumping = true;
+    } else if (isOnGround) {
+      this.isJumping = false;
+    }
+    
+    // Update position of the container to match physics body
+    const bodyPosition = this.body.translation();
+    this.container.position.set(bodyPosition.x, bodyPosition.y, bodyPosition.z);
+    
+    // Update animations based on movement state
+    this.updateAnimationState(wasMoving, wasJumping);
+    
     // Update animation mixer
     if (this.mixer) {
       this.mixer.update(delta);
     }
-
-    const velocity = this.body.linvel();
-    let movement = new THREE.Vector3();
-
-    // WASD movement
-    if (this.keys.w) movement.z -= 1;
-    if (this.keys.s) movement.z += 1;
-    if (this.keys.a) movement.x -= 1;
-    if (this.keys.d) movement.x += 1;
-
-    // Check if player is moving
-    const wasMoving = this.isMoving;
-    this.isMoving = movement.length() > 0;
-    
-    // Check if player is jumping
-    const wasJumping = this.isJumping;
-    this.isJumping = Math.abs(velocity.y) > 0.5;
-    
-    // Update animations based on movement state
-    this.updateAnimationState(wasMoving, wasJumping);
-
-    // Rotate container to face movement direction
-    if (this.isMoving) {
-      movement.normalize().multiplyScalar(this.moveSpeed);
-      const direction = movement.clone().normalize();
-      const lookAtPosition = this.container.position.clone().add(direction);
-      this.container.lookAt(lookAtPosition);
-    }
-
-    // Apply movement to physics body
-    this.body.setLinvel({ x: movement.x, y: velocity.y, z: movement.z }, true);
-
-    // Jump (only if on ground)
-    if (this.keys.space && Math.abs(velocity.y) < 0.1) {
-      this.body.applyImpulse({ x: 0, y: this.jumpForce, z: 0 }, true);
-      this.keys.space = false;
-      
-      // Play jump animation if available
-      if (this.actions['jump']) {
-        this.playAnimation('jump');
-      }
-    }
-
-    // Sync container position with physics body
-    const position = this.body.translation();
-    this.container.position.set(position.x, position.y, position.z);
   }
   
   updateAnimationState(wasMoving, wasJumping) {
-    // Only change animations if state changed
-    if (!this.actions) return;
-    
-    // Handle jumping animation
+    // Determine which animation to play based on movement state
     if (this.isJumping && !wasJumping) {
-      if (this.actions['jump']) {
-        this.playAnimation('jump');
-      }
-      return;
-    }
-    
-    // Handle landing from jump
-    if (!this.isJumping && wasJumping) {
+      // Started jumping
+      this.playAnimation('jump');
+    } else if (!this.isJumping && wasJumping) {
+      // Landed from jump
       if (this.isMoving) {
-        // If moving when landing, play walk/run
-        if (this.actions['run']) {
-          this.playAnimation('run');
-        } else if (this.actions['walk']) {
-          this.playAnimation('walk');
-        }
-      } else {
-        // If standing still when landing, play idle
-        if (this.actions['idle']) {
-          this.playAnimation('idle');
-        }
-      }
-      return;
-    }
-    
-    // Handle movement animations
-    if (this.isMoving && !wasMoving) {
-      // Started moving
-      if (this.actions['run']) {
-        this.playAnimation('run');
-      } else if (this.actions['walk']) {
         this.playAnimation('walk');
-      }
-    } else if (!this.isMoving && wasMoving) {
-      // Stopped moving
-      if (this.actions['idle']) {
+      } else {
         this.playAnimation('idle');
       }
+    } else if (this.isMoving && !wasMoving) {
+      // Started moving
+      this.playAnimation('walk');
+    } else if (!this.isMoving && wasMoving) {
+      // Stopped moving
+      this.playAnimation('idle');
     }
   }
 }
